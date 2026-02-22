@@ -3,20 +3,22 @@ import axios from 'axios';
 import Button from '@mui/material/Button';
 import ButtonGroup from '@mui/material/ButtonGroup';
 import Paper from '@mui/material/Paper';
+import Stack from '@mui/material/Stack';
+import TextField from '@mui/material/TextField';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import Typography from '@mui/material/Typography';
 import { useLocation } from 'react-router-dom';
-import { apiViewUrl, renderError, renderDuration, renderDate, viewSingleUrl, round, joinSpans, renderSciNotation, checkJsonResponse } from './utils';
+import ExperimentStepTable from './components/experiment/ExperimentStepTable';
+import ExperimentSummaryCards from './components/experiment/ExperimentSummaryCards';
+import StatusChip from './components/experiment/StatusChip';
+import { ErrorState, LoadingState } from './components/StateViews';
+import { apiViewUrl, renderDuration, renderDate, viewSingleUrl, round, joinSpans, renderSciNotation, checkJsonResponse } from './utils';
 
 const wandbIcon = "📉";
 const huggingfaceIcon = "🤗";
 const infoIcon = "ℹ️";
-const statusIcons = {
-  "SUCCESS": "✅",
-  "FAILED": "❌",
-  "WAITING": "🧍",
-  "RUNNING": "🏃",
-};
 const loadingIcon = "⏳";
-const errorIcon = "❌";
 
 function ExperimentPage() {
   // Get URL parameters
@@ -30,6 +32,8 @@ function ExperimentPage() {
   const [error, setError] = useState(null);
   const [experiment, setExperiment] = useState(null);
   const [auxiliaryData, setAuxiliaryData] = useState({});  // url -> contents (general file cache)
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilters, setStatusFilters] = useState(['SUCCESS', 'FAILED', 'RUNNING', 'WAITING', 'UNKNOWN', 'ERROR', 'LOADING']);
 
   // Fetch data from backend
   useEffect(() => {
@@ -70,14 +74,14 @@ function ExperimentPage() {
   }, [location, path]);
 
   if (error) {
-    return renderError(error);
+    return <ErrorState message={error} />;
   }
 
   if (!experiment) {
-    return "Loading...";
+    return <LoadingState label="Loading experiment..." lines={4} />;
   }
 
-  return renderExperiment({experiment, path, auxiliaryData});
+  return renderExperiment({experiment, path, auxiliaryData, searchQuery, setSearchQuery, statusFilters, setStatusFilters});
 }
 
 function getAllPrefetchUrls(experiment) {
@@ -99,14 +103,24 @@ export default ExperimentPage;
 /**
  * Render information about an experiment.
  */
-function renderExperiment({experiment, path, auxiliaryData}) {
+function renderExperiment({experiment, path, auxiliaryData, searchQuery, setSearchQuery, statusFilters, setStatusFilters}) {
   const header = renderExperimentHeader({experiment, path});
-  const steps = renderExperimentSteps({experiment, auxiliaryData});
+  const summary = renderExperimentSummary({experiment, auxiliaryData});
+  const controls = renderExperimentControls({searchQuery, setSearchQuery, statusFilters, setStatusFilters});
+  const steps = renderExperimentSteps({experiment, auxiliaryData, searchQuery, statusFilters});
 
-  return (<div>
-    <Paper elevation={3} style={{padding: 10}}>{header}</Paper>
-    <Paper elevation={3} style={{padding: 10}}>{steps}</Paper>
-  </div>);
+  return (
+    <Stack spacing={2}>
+      <Paper elevation={1} sx={{p: 2}}>
+        {header}
+      </Paper>
+      {summary}
+      <Paper elevation={1} sx={{p: 2, position: 'sticky', top: 84, zIndex: 1}}>
+        {controls}
+      </Paper>
+      {steps}
+    </Stack>
+  );
 }
 
 /**
@@ -126,14 +140,14 @@ function renderExperimentHeader({experiment, path}) {
   // Link to plain data browser
   links.push(<Button href={viewSingleUrl(path)} target="_blank" rel="noreferrer">JSON</Button>);
 
-  return (<div>
-    <h3>Experiment: {relativePath}</h3>
-    <div className="experiment-step-line">Created: {renderDate(experiment.created_date)}</div>
-    <div className="description">{experiment.description}</div>
-    <ButtonGroup>
-      {links.map((link, i) => <span key={i}>{link}</span>)}
-    </ButtonGroup>
-  </div>);
+  return (
+    <Stack spacing={1}>
+      <Typography variant="h6">Experiment: {relativePath}</Typography>
+      <Typography variant="body2" color="text.secondary">Created: {renderDate(experiment.created_date)}</Typography>
+      <Typography variant="body2" color="text.secondary">{experiment.description}</Typography>
+      <ButtonGroup>{links.map((link, i) => <span key={i}>{link}</span>)}</ButtonGroup>
+    </Stack>
+  );
 }
 
 /**
@@ -152,34 +166,100 @@ function renderExperimentHeader({experiment, path}) {
  * So that means a hardcoded path will show up as a (implicit) dependency and
  * dependencies that are not part of the selected fields will not show up.
  */
-function renderExperimentSteps({experiment, auxiliaryData}) {
+function renderExperimentSummary({experiment, auxiliaryData}) {
+  const statusCounts = experiment.steps.reduce((counts, step) => {
+    const status = getStepStatus({step, auxiliaryData});
+    counts[status] = (counts[status] || 0) + 1;
+    return counts;
+  }, {});
+  return (
+    <ExperimentSummaryCards
+      createdDate={renderDate(experiment.created_date)}
+      totalSteps={experiment.steps.length}
+      statusCounts={statusCounts}
+    />
+  );
+}
+
+function renderExperimentControls({searchQuery, setSearchQuery, statusFilters, setStatusFilters}) {
+  const allStatuses = ['SUCCESS', 'FAILED', 'RUNNING', 'WAITING', 'UNKNOWN', 'ERROR', 'LOADING'];
+  return (
+    <Stack spacing={1.5}>
+      <TextField
+        size="small"
+        label="Search steps"
+        placeholder="Search step name, function, description, output path..."
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+      />
+      <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+        <Typography variant="body2" color="text.secondary">Status filters</Typography>
+        <ToggleButtonGroup
+          size="small"
+          value={statusFilters}
+          onChange={(_, next) => setStatusFilters(next.length > 0 ? next : statusFilters)}
+        >
+          {allStatuses.map((status) => (
+            <ToggleButton key={status} value={status}>
+              <StatusChip status={status} />
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+      </Stack>
+    </Stack>
+  );
+}
+
+function renderExperimentSteps({experiment, auxiliaryData, searchQuery, statusFilters}) {
+  const normalizedQuery = searchQuery.trim().toLowerCase();
   const rows = [];
   experiment.steps.forEach((step, index) => {
-    const row = [];
+    const status = getStepStatus({step, auxiliaryData});
+    if (!statusFilters.includes(status)) {
+      return;
+    }
 
-    row.push(<td className="experiment-step-table-cell" key="status">{renderExperimentStatus({step, auxiliaryData})}</td>);
+    const searchText = [
+      step.name,
+      step.fn_name,
+      step.description,
+      step.output_path,
+    ].filter(Boolean).join(' ').toLowerCase();
+    if (normalizedQuery && !searchText.includes(normalizedQuery)) {
+      return;
+    }
 
+    const statusNode = renderExperimentStatus({step, auxiliaryData});
     const info = <a href={viewInfoUrl(step)} target="_blank" rel="noreferrer" title="View raw JSON specification of this step">{infoIcon}</a>;
-    row.push(<td className="experiment-step-table-cell" key="info">{info}</td>);
-
     const stepName = <a href={viewOutputPathUrl(step)} target="_blank" rel="noreferrer" title={`View raw output path produced by this step:\n${step.output_path}`}>[{step.name}]</a>;
-    row.push(<td className="experiment-step-table-cell" key="step-name">{stepName}</td>);
-
-    row.push(<td className="experiment-step-table-cell" key="equals">:=</td>);
 
     try {
       const {name, description} = renderStepDescription({step, steps: experiment.steps, auxiliaryData});
-      row.push(<td className="experiment-step-table-cell" key="name" title={step.fn_name}>{name}</td>);
-      row.push(<td className="experiment-step-table-cell" key="description">{description}</td>);
+      rows.push({
+        id: `${index}-${step.output_path}`,
+        anchor: step.output_path,
+        status: statusNode,
+        info,
+        stepName,
+        fnName: step.fn_name,
+        name,
+        description,
+      });
     } catch (error) {
       console.error(error);
-      row.push(<td className="experiment-step-table-cell" key="name" title={step.fn_name}>{step.fn_name}</td>);
-      row.push(<td className="experiment-step-table-cell" key="description"><span className="error">{error.message}</span></td>);
+      rows.push({
+        id: `${index}-${step.output_path}`,
+        anchor: step.output_path,
+        status: statusNode,
+        info,
+        stepName,
+        fnName: step.fn_name,
+        name: step.fn_name,
+        description: <span className="error">{error.message}</span>,
+      });
     }
-
-    rows.push(<tr key={index} id={step.output_path}>{row}</tr>);
   });
-  return (<table className="experiment-steps-table"><tbody>{rows}</tbody></table>);
+  return <ExperimentStepTable rows={rows} />;
 }
 
 function renderDownloadStep({step}) {
@@ -471,21 +551,32 @@ function renderEvaluateStep({step, steps, auxiliaryData}) {
   return {name: "evaluate", description};
 }
 
-function renderExperimentStatus({step, auxiliaryData}) {
+function getStepStatus({step, auxiliaryData}) {
   const data = auxiliaryData[apiStatusUrl(step)];
   if (!data) {
-    return loadingIcon;
+    return "LOADING";
   }
   if (data.error) {
-    return <span className="error" title={data.error}>{errorIcon}</span>;
+    return "ERROR";
   }
   const events = data.items || [];
   if (events.length === 0) {
-    return <span className="error" title="No status events found">{errorIcon}</span>;
+    return "ERROR";
   }
 
   const lastEvent = events[events.length - 1] || {};
-  const status = lastEvent.status || "UNKNOWN";
+  return lastEvent.status || "UNKNOWN";
+}
+
+function renderExperimentStatus({step, auxiliaryData}) {
+  const data = auxiliaryData[apiStatusUrl(step)];
+  const status = getStepStatus({step, auxiliaryData});
+  if (!data || data.error || !(data.items || []).length) {
+    return <StatusChip status={status} />;
+  }
+
+  const events = data.items || [];
+  const lastEvent = events[events.length - 1] || {};
 
   const isActive = ["WAITING", "RUNNING"].includes(status);
 
@@ -503,13 +594,10 @@ function renderExperimentStatus({step, auxiliaryData}) {
     }
   }
 
-  const statusIcon = statusIcons[status] || status;
-
-  const lastStatus = <span className={"status-" + status}>{statusIcon}</span>;
   const temporalInfo = temporalParts.length ? ` (${temporalParts.join(", ")})` : "";
   return <span className="status-container">
     <a href={viewStatusUrl(step)} target="_blank" rel="noreferrer" title={`View raw JSON status of this step${temporalInfo}`}>
-      {lastStatus}
+      <StatusChip status={status} />
     </a>
   </span>;
 }
