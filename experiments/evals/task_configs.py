@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
-
-from levanter.eval_harness import TaskConfig
+from typing import TYPE_CHECKING
 
 from marin.evaluation.evaluation_config import EvalTaskConfig
+
+if TYPE_CHECKING:
+    from levanter.eval_harness import TaskConfig
 
 # tasks to run (corresponding to lm_eval_harness tasks)
 # subset from from page 43 of the DCLM paper: https://arxiv.org/pdf/2406.11794
@@ -580,10 +582,12 @@ def ruler_tasks_with_max_seq_lengths(max_seq_lengths: Sequence[int]) -> tuple[Ev
 RULER_TASKS_DEFAULT_LENGTH = ruler_tasks_with_max_seq_lengths(RULER_DEFAULT_MAX_SEQ_LENGTHS)
 
 
-def convert_to_levanter_task_config(tasks: Sequence[EvalTaskConfig]) -> list[TaskConfig]:
+def convert_to_levanter_task_config(tasks: Sequence[EvalTaskConfig]) -> list["TaskConfig"]:
     """
     Convert a list of EvalTaskConfig to a list of TaskConfig that Levanter's eval_harness expects.
     """
+    from levanter.eval_harness import TaskConfig
+
     return [
         TaskConfig(
             task=task.name,

@@ -18,67 +18,11 @@ from levanter.trainer import TrainerConfig
 from experiments.evals.task_configs import convert_to_levanter_task_config
 from marin.evaluation.evaluation_config import EvalTaskConfig
 from marin.evaluation.evaluators.evaluator import ModelConfig
+from marin.evaluation.evaluators.lm_eval_length_utils import resolve_lm_eval_max_length
 from marin.evaluation.evaluators.levanter_tpu_evaluator import LevanterTpuEvaluator
 from fray.v1.cluster.ray.deps import build_runtime_env_for_packages
 
 logger = logging.getLogger(__name__)
-DEFAULT_LM_EVAL_MAX_LENGTH = 4096
-
-
-def _coerce_positive_int(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed <= 0:
-        return None
-    return parsed
-
-
-def _max_task_seq_length(evals: list[EvalTaskConfig]) -> int | None:
-    max_length = None
-    for eval_task in evals:
-        task_kwargs = eval_task.task_kwargs or {}
-        task_seq_lengths = task_kwargs.get("max_seq_lengths")
-        if task_seq_lengths is None:
-            continue
-        if not isinstance(task_seq_lengths, list | tuple):
-            logger.warning(
-                "Ignoring non-list max_seq_lengths for task %s: %r",
-                eval_task.name,
-                task_seq_lengths,
-            )
-            continue
-        for seq_length in task_seq_lengths:
-            parsed = _coerce_positive_int(seq_length)
-            if parsed is None:
-                logger.warning(
-                    "Ignoring non-positive max_seq_lengths entry for task %s: %r",
-                    eval_task.name,
-                    seq_length,
-                )
-                continue
-            max_length = parsed if max_length is None else max(max_length, parsed)
-    return max_length
-
-
-def _resolve_lm_eval_max_length(engine_kwargs: dict | None, evals: list[EvalTaskConfig]) -> int:
-    engine_kwargs = engine_kwargs or {}
-    configured_max_length = _coerce_positive_int(engine_kwargs.get("max_length"))
-    if configured_max_length is None:
-        configured_max_length = _coerce_positive_int(engine_kwargs.get("max_model_len"))
-
-    task_max_length = _max_task_seq_length(evals)
-
-    if configured_max_length is None and task_max_length is None:
-        return DEFAULT_LM_EVAL_MAX_LENGTH
-    if configured_max_length is None:
-        return task_max_length
-    if task_max_length is None:
-        return configured_max_length
-    return max(configured_max_length, task_max_length)
 
 
 class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
@@ -136,7 +80,7 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             # convert to the config that Levanter's eval_harness expects
             tasks = convert_to_levanter_task_config(evals)
             logger.info(f"Tasks: {tasks}")
-            max_length = _resolve_lm_eval_max_length(model.engine_kwargs, evals)
+            max_length = resolve_lm_eval_max_length(model.engine_kwargs, evals)
             logger.info("Resolved lm-eval max_length=%s", max_length)
 
             model_path = model_name_or_path
