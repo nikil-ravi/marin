@@ -416,10 +416,44 @@ llama_8b_train_config = SimpleTrainConfig(
 
 
 def compute_num_parameters(config: LlamaConfig, vocab_size: int) -> int:
-    num_parameters = config.total_trainable_params(vocab_size)
-    if num_parameters is None:
-        raise ValueError("LlamaConfig.total_trainable_params returned None")
-    return int(num_parameters)
+    hidden_dim = config.hidden_dim
+    intermediate_dim = config.intermediate_dim
+    head_size = config.actual_head_size
+
+    norm_terms_per_dim = int(config.use_layer_norm_weight) + int(config.use_bias)
+    norm_embed_params = norm_terms_per_dim * hidden_dim
+    norm_head_params = norm_terms_per_dim * head_size
+
+    q_params = hidden_dim * config.num_heads * head_size
+    k_params = hidden_dim * config.num_kv_heads * head_size
+    v_params = hidden_dim * config.num_kv_heads * head_size
+    o_params = config.num_heads * head_size * hidden_dim
+    attention_params = q_params + k_params + v_params + o_params
+
+    if config.use_bias:
+        attention_params += (config.num_heads + 2 * config.num_kv_heads) * head_size + hidden_dim
+
+    if config.use_qk_norm:
+        attention_params += 2 * norm_head_params
+
+    mlp_params = 3 * hidden_dim * intermediate_dim
+    if config.use_bias:
+        mlp_params += 2 * intermediate_dim + hidden_dim
+
+    layer_norm_params = 2 * norm_embed_params
+    if config.hybrid_norm:
+        layer_norm_params += 2 * norm_embed_params
+
+    transformer_params = config.num_layers * (attention_params + mlp_params + layer_norm_params)
+    transformer_params += norm_embed_params
+
+    embedding_params = vocab_size * hidden_dim
+    if config.input_embedding_norm:
+        embedding_params += norm_embed_params
+
+    lm_head_params = 0 if config.tie_word_embeddings else vocab_size * hidden_dim
+
+    return transformer_params + embedding_params + lm_head_params
 
 
 # For scaling laws
