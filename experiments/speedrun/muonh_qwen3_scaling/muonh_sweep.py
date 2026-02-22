@@ -8,15 +8,21 @@ configs mirroring those in marin/experiments/speedrun/muonh_llama_scaling/muonh_
 
 import logging
 import os
-from levanter.models.qwen import Qwen3Config
-from levanter.models.llama import LlamaConfig
+
+from fray.cluster import ResourceConfig
 from levanter.optim import MuonHConfig
 
-from experiments.llama import llama_1_4b, llama_150m, llama_300m, llama_600m
 from experiments.simple_train_config import SimpleTrainConfig
-from marin.execution.executor import executor_main
-from fray.cluster import ResourceConfig
-from marin.speedrun.speedrun import Author, SpeedrunConfig, default_speedrun
+from experiments.speedrun.scaling_common import (
+    LLAMA_SCALING_MODEL_CONFIGS,
+    SCALING_PARAM_COUNTS,
+    build_runs,
+    execute_speedrun,
+    get_num_train_steps,
+    qwen3_from_llama,
+    require_size_value,
+)
+from marin.speedrun.speedrun import Author, SpeedrunConfig
 
 AUTHOR = Author(
     name="Kaiyue Wen",
@@ -27,56 +33,7 @@ AUTHOR = Author(
 logger = logging.getLogger("ray")
 
 
-def get_num_train_steps(param_count, batch_size, seq_len):
-    """Compute the number of steps for Chinchilla optimal training (20x params tokens)."""
-    total_tokens = param_count * 20
-    tokens_per_step = batch_size * seq_len
-    return total_tokens // tokens_per_step
-
-
-def _to_qwen3_from_llama(llama_cfg: LlamaConfig, *, seq_len_override=None) -> Qwen3Config:
-    """
-    Build a Qwen3Config with identical sizes to a given LLaMA config.
-    """
-    qwen = Qwen3Config(
-        max_seq_len=seq_len_override if seq_len_override is not None else llama_cfg.max_seq_len,
-        hidden_dim=llama_cfg.hidden_dim,
-        intermediate_dim=llama_cfg.intermediate_dim,
-        num_layers=llama_cfg.num_layers,
-        num_heads=llama_cfg.num_heads,
-        num_kv_heads=llama_cfg.num_kv_heads,
-        head_dim=getattr(llama_cfg, "head_dim", None),
-        use_bias=getattr(llama_cfg, "use_bias", False),
-        rope=llama_cfg.rope,
-        activation_function=llama_cfg.activation_function,
-        initializer_range=llama_cfg.initializer_range,
-        layer_norm_epsilon=llama_cfg.layer_norm_epsilon,
-        tie_word_embeddings=llama_cfg.tie_word_embeddings,
-        upcast_attn=llama_cfg.upcast_attn,
-        attn_backend=llama_cfg.attn_backend,
-        flash_attention_block_size=llama_cfg.flash_attention_block_size,
-        scan_layers=getattr(llama_cfg, "scan_layers", False),
-        gradient_checkpointing=getattr(llama_cfg, "gradient_checkpointing", False),
-        hybrid_norm=True,
-    )
-    return qwen
-
-
 def build_config(size: str) -> tuple[str, SpeedrunConfig]:
-    param_counts = {
-        "130m": 130_000_000,
-        "300m": 300_000_000,
-        "520m": 520_000_000,
-        "1_2b": 1_200_000_000,
-    }
-
-    llama_model_cfgs = {
-        "130m": llama_150m,
-        "300m": llama_300m,
-        "520m": llama_600m,
-        "1_2b": llama_1_4b,
-    }
-
     batch_sizes = {
         "130m": 128,
         "300m": 128,
@@ -157,21 +114,19 @@ def build_config(size: str) -> tuple[str, SpeedrunConfig]:
         "1_2b": "qwen3_1_2b_muonh_4096_low_lr",
     }
 
-    if size not in param_counts:
-        raise ValueError(f"Unknown size: {size}")
-
-    llama_cfg = llama_model_cfgs[size]
-    batch_size = batch_sizes[size]
-    resource_config = resource_cfgs[size]
-    muon = muon_configs[size]
-    description = descriptions[size]
-    run_name = run_names[size]
+    param_count = require_size_value(size, SCALING_PARAM_COUNTS)
+    llama_cfg = require_size_value(size, LLAMA_SCALING_MODEL_CONFIGS)
+    batch_size = require_size_value(size, batch_sizes)
+    resource_config = require_size_value(size, resource_cfgs)
+    muon = require_size_value(size, muon_configs)
+    description = require_size_value(size, descriptions)
+    run_name = require_size_value(size, run_names)
 
     # Convert to Qwen3Config and set seq_len=4096 for the sweep
-    model_config = _to_qwen3_from_llama(llama_cfg, seq_len_override=4096)
+    model_config = qwen3_from_llama(llama_cfg, seq_len_override=4096, hybrid_norm=True)
     seq_len = model_config.max_seq_len
 
-    num_train_steps = get_num_train_steps(param_counts[size], batch_size, seq_len)
+    num_train_steps = get_num_train_steps(param_count, batch_size, seq_len)
 
     train = SimpleTrainConfig(
         resource_config,
@@ -195,19 +150,10 @@ def main():
         logger.info("Skipping experiment execution on CI environment, needs HF access.")
         return
 
-    runs = [
-        build_config("130m"),
-        build_config("300m"),
-        build_config("520m"),
-        build_config("1_2b"),
-    ]
-
-    steps = []
-    for name, cfg in runs:
-        cfg.print_run_info()
-        steps.extend(default_speedrun(name, cfg))
-
-    executor_main(steps=steps, description="Qwen3 Muon speedruns (Chinchilla-optimal tokens, w/ QK-Norm)")
+    execute_speedrun(
+        build_runs(build_config),
+        description="Qwen3 Muon speedruns (Chinchilla-optimal tokens, w/ QK-Norm)",
+    )
 
 
 if __name__ == "__main__":

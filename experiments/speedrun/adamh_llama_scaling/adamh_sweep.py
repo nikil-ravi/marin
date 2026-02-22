@@ -3,14 +3,11 @@
 
 """Speedruns using the AdamH optimizer for various Llama model sizes (Chinchilla optimal steps)."""
 
-import dataclasses
 import logging
 import os
 
-from levanter.optim import AdamHConfig
-from marin.execution.executor import executor_main
 from fray.cluster import ResourceConfig
-from marin.speedrun.speedrun import Author, SpeedrunConfig, default_speedrun
+from levanter.optim import AdamHConfig
 
 from experiments.simple_train_config import SimpleTrainConfig
 from experiments.speedrun.adamh_llama_scaling.llama_with_hybrid_norm import (
@@ -19,28 +16,22 @@ from experiments.speedrun.adamh_llama_scaling.llama_with_hybrid_norm import (
     llama_300m_all_norm,
     llama_600m_all_norm,
 )
+from experiments.speedrun.scaling_common import (
+    SCALING_PARAM_COUNTS,
+    build_runs,
+    execute_speedrun,
+    get_num_train_steps,
+    require_size_value,
+    with_seq_len,
+)
+from marin.speedrun.speedrun import Author, SpeedrunConfig
 
 AUTHOR = Author(name="Kaiyue Wen", affiliation="Stanford University", url="https://whenwen.github.io")
 
 logger = logging.getLogger("ray")
 
 
-def get_num_train_steps(param_count, batch_size, max_seq_len):
-    """Compute the number of steps for Chinchilla optimal training (20x params tokens)."""
-    total_tokens = param_count * 20
-    tokens_per_step = batch_size * max_seq_len
-    return total_tokens // tokens_per_step
-
-
 def build_config(size: str) -> tuple[str, SpeedrunConfig]:
-    # Parameter counts
-    param_counts = {
-        "130m": 130_000_000,
-        "300m": 300_000_000,
-        "520m": 520_000_000,
-        "1_2b": 1_200_000_000,
-    }
-
     # Model configs
     model_cfgs = {
         "130m": llama_150m_all_norm,
@@ -133,18 +124,14 @@ def build_config(size: str) -> tuple[str, SpeedrunConfig]:
         "1_2b": "llama_1_2b_adamh_lr0.015_adam_lr0.0015_warmup1000_qk",
     }
 
-    # Gather config for the requested size
-    if size not in param_counts:
-        raise ValueError(f"Unknown size: {size}")
-
-    param_count = param_counts[size]
-    batch_size = batch_sizes[size]
-    model_config = dataclasses.replace(model_cfgs[size], max_seq_len=4096)
+    param_count = require_size_value(size, SCALING_PARAM_COUNTS)
+    batch_size = require_size_value(size, batch_sizes)
+    model_config = with_seq_len(require_size_value(size, model_cfgs), seq_len=4096)
     max_seq_len = model_config.max_seq_len
-    resource_config = resource_cfgs[size]
-    adam = adam_configs[size]
-    description = descriptions[size]
-    run_name = run_names[size]
+    resource_config = require_size_value(size, resource_cfgs)
+    adam = require_size_value(size, adam_configs)
+    description = require_size_value(size, descriptions)
+    run_name = require_size_value(size, run_names)
 
     num_train_steps = get_num_train_steps(param_count, batch_size, max_seq_len)
 
@@ -169,19 +156,7 @@ def main():
         logger.info("Skipping experiment execution on CI environment, needs HF access.")
         return
 
-    runs = [
-        build_config("130m"),
-        build_config("300m"),
-        build_config("520m"),
-        build_config("1_2b"),
-    ]
-
-    steps = []
-    for name, cfg in runs:
-        cfg.print_run_info()
-        steps.extend(default_speedrun(name, cfg))
-
-    executor_main(steps=steps, description="AdamH speedruns (Chinchilla optimal)")
+    execute_speedrun(build_runs(build_config), description="AdamH speedruns (Chinchilla optimal)")
 
 
 if __name__ == "__main__":

@@ -6,46 +6,25 @@
 Optimizer configs were searched & provided by Kaiyue Wen in https://wandb.ai/marin-community/marin/reports/Fantastic-Optimizers-and-Where-to-Find-Them--VmlldzoxMjgzMzQ2NQ
 """
 
-import dataclasses
-import logging
-
+from fray.cluster import ResourceConfig
 from levanter.optim import CautiousConfig
 
-from experiments.llama import llama_1_4b, llama_150m, llama_300m, llama_600m
 from experiments.simple_train_config import SimpleTrainConfig
-from marin.execution.executor import executor_main
-from fray.cluster import ResourceConfig
-from marin.speedrun.speedrun import Author, SpeedrunConfig, default_speedrun
+from experiments.speedrun.scaling_common import (
+    LLAMA_SCALING_MODEL_CONFIGS,
+    SCALING_PARAM_COUNTS,
+    build_runs,
+    execute_speedrun,
+    get_num_train_steps,
+    require_size_value,
+    with_seq_len,
+)
+from marin.speedrun.speedrun import Author, SpeedrunConfig
 
 AUTHOR = Author(name="William Held", affiliation="Georgia Tech", url="https://WilliamHeld.com")
 
-logger = logging.getLogger("ray")
-
-
-def get_num_train_steps(param_count, batch_size, max_seq_len):
-    """Compute the number of steps for Chinchilla optimal training (20x params tokens)."""
-    total_tokens = param_count * 20
-    tokens_per_step = batch_size * max_seq_len
-    return total_tokens // tokens_per_step
-
 
 def build_config(size: str) -> tuple[str, SpeedrunConfig]:
-    # Parameter counts
-    param_counts = {
-        "130m": 130_000_000,
-        "300m": 300_000_000,
-        "520m": 520_000_000,
-        "1_2b": 1_200_000_000,
-    }
-
-    # Model configs
-    model_cfgs = {
-        "130m": llama_150m,
-        "300m": llama_300m,
-        "520m": llama_600m,
-        "1_2b": llama_1_4b,
-    }
-
     # Training batch sizes
     batch_sizes = {
         "130m": 128,
@@ -126,18 +105,14 @@ def build_config(size: str) -> tuple[str, SpeedrunConfig]:
         "1_2b": "llama_1_2b_c_adamc_4096",
     }
 
-    # Gather config for the requested size
-    if size not in param_counts:
-        raise ValueError(f"Unknown size: {size}")
-
-    param_count = param_counts[size]
-    batch_size = batch_sizes[size]
-    model_config = dataclasses.replace(model_cfgs[size], max_seq_len=4096)
+    param_count = require_size_value(size, SCALING_PARAM_COUNTS)
+    batch_size = require_size_value(size, batch_sizes)
+    model_config = with_seq_len(require_size_value(size, LLAMA_SCALING_MODEL_CONFIGS), seq_len=4096)
     max_seq_len = model_config.max_seq_len
-    resource_config = resource_cfgs[size]
-    cadamc = cautious_configs[size]
-    description = descriptions[size]
-    run_name = run_names[size]
+    resource_config = require_size_value(size, resource_cfgs)
+    cadamc = require_size_value(size, cautious_configs)
+    description = require_size_value(size, descriptions)
+    run_name = require_size_value(size, run_names)
 
     num_train_steps = get_num_train_steps(param_count, batch_size, max_seq_len)
 
@@ -158,16 +133,4 @@ def build_config(size: str) -> tuple[str, SpeedrunConfig]:
 
 
 if __name__ == "__main__":
-    runs = [
-        build_config("130m"),
-        build_config("300m"),
-        build_config("520m"),
-        build_config("1_2b"),
-    ]
-
-    steps = []
-    for name, cfg in runs:
-        cfg.print_run_info()
-        steps.extend(default_speedrun(name, cfg))
-
-    executor_main(steps=steps, description="C-AdamC speedruns (Chinchilla optimal)")
+    execute_speedrun(build_runs(build_config), description="C-AdamC speedruns (Chinchilla optimal)")
