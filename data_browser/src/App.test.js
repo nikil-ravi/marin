@@ -1,8 +1,18 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
+import axios from 'axios';
 
-test('renders learn react link', () => {
+jest.mock('axios', () => ({
+  get: jest.fn(),
+}));
+
+test('renders app shell and home launch actions', async () => {
+  axios.get.mockResolvedValue({
+    data: { root_paths: ['gs://marin-us-central2'] },
+  });
+
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(screen.getByText('Marin Data Browser')).toBeInTheDocument();
+  expect(await screen.findByText('Start browsing')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Open path' })).toBeInTheDocument();
 });
