@@ -1006,6 +1006,8 @@ class TaskConfig:
     """Jinja2 template string to process a sample into the appropriate target for the model."""
     doc_to_choice: str | None = None
     """Jinja2 template string to process a sample into a list of possible string choices for multiple_choice tasks. """
+    metadata: dict | None = None
+    """Task metadata passed to lm-eval TaskManager, e.g. synthetic task kwargs."""
 
     # Extra Levanter-only config to control generation stops per task
     additional_stop_strings: list[str] | None = None
@@ -1069,7 +1071,7 @@ class LmEvalHarnessConfig:
         """
         return [task.to_dict() if isinstance(task, TaskConfig) else task for task in self.task_spec]
 
-    def to_task_dict(self) -> dict:
+    def to_task_dict(self, task_manager_metadata: dict | None = None) -> dict:
         """
         Convert the task spec to a dictionary that the LM Eval Harness expects.
 
@@ -1083,7 +1085,7 @@ class LmEvalHarnessConfig:
         logger.info("Loading tasks...")
         import lm_eval.tasks as tasks
 
-        manager = tasks.TaskManager()
+        manager = tasks.TaskManager(metadata=task_manager_metadata)
         # we need to do it this way b/c i can't figure out how to run e.g. hellaswag 0 shot and 10 shot in a single run
         this_tasks = {}
         for task in tqdm(self.to_task_spec()):
@@ -1256,7 +1258,8 @@ def run_lm_eval_harness(
         Otherwise, returns None.
     """
     # Build the tasks dictionary
-    tasks_to_run = config.to_task_dict()
+    task_manager_metadata = _task_manager_metadata_for_tokenizer(tokenizer)
+    tasks_to_run = config.to_task_dict(task_manager_metadata=task_manager_metadata)
 
     outputs = _actually_run_eval_harness(
         config, model, tasks_to_run, tokenizer, EvalBatch, axis_resources, mp, profiler_config
@@ -1551,7 +1554,8 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
     Returns:
         Callback function that can be used with the trainer
     """
-    tasks_to_run = config.to_task_dict()
+    task_manager_metadata = _task_manager_metadata_for_tokenizer(tokenizer)
+    tasks_to_run = config.to_task_dict(task_manager_metadata=task_manager_metadata)
 
     def lm_eval_harness(step: StepInfo, force=False):
         if step.step == 0 and not force:
@@ -1590,6 +1594,13 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
                 logger.info("Uploaded results to tracker")
 
     return lm_eval_harness
+
+
+def _task_manager_metadata_for_tokenizer(tokenizer: HfTokenizer) -> dict[str, str]:
+    tokenizer_name = getattr(tokenizer, "name_or_path", None) or getattr(tokenizer, "model_name", None)
+    if tokenizer_name is None:
+        return {}
+    return {"pretrained": tokenizer_name}
 
 
 # lifted from lm-eval simple_evaluate
