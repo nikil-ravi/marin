@@ -416,24 +416,10 @@ llama_8b_train_config = SimpleTrainConfig(
 
 
 def compute_num_parameters(config: LlamaConfig, vocab_size: int) -> int:
-    head_size = config.hidden_dim // config.num_heads
-    q_params = config.num_heads * head_size * config.hidden_dim
-    k_params = config.num_kv_heads * head_size * config.hidden_dim
-    v_params = config.num_kv_heads * head_size * config.hidden_dim
-    o_params = config.num_heads * head_size * config.hidden_dim
-    attention_params = q_params + k_params + v_params + o_params
-
-    layer_norm_params = 2 * config.hidden_dim
-
-    gate_params = config.hidden_dim * config.intermediate_dim
-    up_params = config.hidden_dim * config.intermediate_dim
-    down_params = config.intermediate_dim * config.hidden_dim
-    mlp_params = gate_params + up_params + down_params
-
-    nonembedding_params = config.num_layers * (attention_params + mlp_params + layer_norm_params)
-    embedding_params = 2 * vocab_size * config.hidden_dim
-
-    return nonembedding_params + embedding_params
+    num_parameters = config.total_trainable_params(vocab_size)
+    if num_parameters is None:
+        raise ValueError("LlamaConfig.total_trainable_params returned None")
+    return int(num_parameters)
 
 
 # For scaling laws
