@@ -1,8 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { useLocation, useNavigate, Link } from 'react-router-dom';
 import Button from '@mui/material/Button';
-import { apiConfigUrl, viewSingleUrl, navigateToUrl, renderError, checkJsonResponse } from "./utils";
+import Paper from '@mui/material/Paper';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
+import { useLocation, useNavigate } from 'react-router-dom';
+import OpenPathDialog from './components/home/OpenPathDialog';
+import RootPathCards from './components/home/RootPathCards';
+import { ErrorState, LoadingState } from './components/StateViews';
+import { apiConfigUrl, navigateToUrl, checkJsonResponse } from './utils';
 
 function HomePage() {
   const location = useLocation();
@@ -12,6 +18,8 @@ function HomePage() {
   // State
   const [error, setError] = useState(null);
   const [config, setConfig] = useState(null);
+  const [openPathDialog, setOpenPathDialog] = useState(false);
+  const [openExperimentDialog, setOpenExperimentDialog] = useState(false);
 
   // Fetch data from backend
   useEffect(() => {
@@ -37,33 +45,62 @@ function HomePage() {
   }, []);
 
   if (error) {
-    return renderError(error);
+    return <ErrorState message={error} />;
   }
 
   if (!config) {
-    return "Loading...";
+    return <LoadingState label="Loading browser configuration..." />;
   }
 
-  const links = config.root_paths.map((path) => {
-    return <a href={viewSingleUrl(path)} target="_blank" rel="noreferrer">{path}</a>;
-  });
+  function openViewPath(path) {
+    navigateToUrl(urlParams, { paths: JSON.stringify([path]), offset: 0 }, { pathname: '/view' }, navigate);
+    setOpenPathDialog(false);
+  }
 
-  function goToExperiment() {
-    const path = prompt("Enter path to experiment JSON (e.g., gs://marin-us-central2/experiments/...):");
-    if (!path) {
-      return;
-    }
-    navigateToUrl(urlParams, {path}, {pathname: "/experiment"}, navigate);
+  function openExperiment(path) {
+    navigateToUrl(urlParams, { path }, { pathname: '/experiment' }, navigate);
+    setOpenExperimentDialog(false);
   }
 
   return (
-    <div>
-      <h1>Data Browser</h1>
-      <ul>
-        {links.map((link, i) => <li key={i}>{link}</li>)}
-      </ul>
-      <Button variant="contained" onClick={goToExperiment}>Go to experiment</Button>
-    </div>
+    <Stack spacing={2}>
+      <Paper sx={{ p: 2 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }}>
+          <Stack spacing={0.5}>
+            <Typography variant="h5">Start browsing</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Open root paths, jump to a custom path, or inspect an experiment config.
+            </Typography>
+          </Stack>
+          <Stack direction="row" spacing={1}>
+            <Button variant="outlined" onClick={() => setOpenPathDialog(true)}>
+              Open path
+            </Button>
+            <Button variant="contained" onClick={() => setOpenExperimentDialog(true)}>
+              Open experiment
+            </Button>
+          </Stack>
+        </Stack>
+      </Paper>
+
+      <RootPathCards rootPaths={config.root_paths} />
+
+      <OpenPathDialog
+        open={openPathDialog}
+        title="Open path in Data View"
+        description="Enter any local or cloud path (e.g., gs://bucket/path or ../local_store)."
+        onClose={() => setOpenPathDialog(false)}
+        onSubmit={openViewPath}
+      />
+
+      <OpenPathDialog
+        open={openExperimentDialog}
+        title="Open experiment"
+        description="Enter the path to an experiment JSON file."
+        onClose={() => setOpenExperimentDialog(false)}
+        onSubmit={openExperiment}
+      />
+    </Stack>
   );
 }
 
