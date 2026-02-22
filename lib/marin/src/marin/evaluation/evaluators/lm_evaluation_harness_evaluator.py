@@ -22,6 +22,77 @@ from marin.inference.vllm_server import VLLM_NATIVE_PIP_PACKAGES, VllmEnvironmen
 logger = logging.getLogger(__name__)
 
 
+def _split_model_args(model_args: str) -> list[str]:
+    return [part.strip() for part in model_args.split(",") if part.strip()]
+
+
+def _get_model_arg(model_args: str, key: str) -> str | None:
+    prefix = f"{key}="
+    for part in _split_model_args(model_args):
+        if part.startswith(prefix):
+            return part[len(prefix) :]
+    return None
+
+
+def _set_model_arg(model_args: str, key: str, value: object) -> str:
+    parts = _split_model_args(model_args)
+    replacement = f"{key}={value}"
+    for idx, part in enumerate(parts):
+        if part.startswith(f"{key}="):
+            parts[idx] = replacement
+            break
+    else:
+        parts.append(replacement)
+    return ",".join(parts)
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _task_max_seq_length(eval_task: EvalTaskConfig) -> int | None:
+    task_kwargs = eval_task.task_kwargs or {}
+    max_seq_lengths = task_kwargs.get("max_seq_lengths")
+    if max_seq_lengths is None:
+        return None
+    if not isinstance(max_seq_lengths, list | tuple):
+        logger.warning("Ignoring non-list max_seq_lengths for %s: %r", eval_task.name, max_seq_lengths)
+        return None
+
+    max_length = None
+    for seq_length in max_seq_lengths:
+        parsed = _coerce_positive_int(seq_length)
+        if parsed is None:
+            logger.warning("Ignoring invalid max_seq_lengths entry for %s: %r", eval_task.name, seq_length)
+            continue
+        max_length = parsed if max_length is None else max(max_length, parsed)
+    return max_length
+
+
+def _normalize_model_args_for_task(base_model_args: str, eval_task: EvalTaskConfig) -> str:
+    model_args = base_model_args
+    max_length = _coerce_positive_int(_get_model_arg(model_args, "max_length"))
+    max_model_len = _coerce_positive_int(_get_model_arg(model_args, "max_model_len"))
+    required_task_length = _task_max_seq_length(eval_task)
+
+    if max_length is None and max_model_len is not None:
+        model_args = _set_model_arg(model_args, "max_length", max_model_len)
+        max_length = max_model_len
+
+    if required_task_length is not None and (max_length is None or max_length < required_task_length):
+        model_args = _set_model_arg(model_args, "max_length", required_task_length)
+
+    return model_args
+
+
 # TODO: Multiple choice tasks currently don't work on TPUs: https://github.com/vllm-project/vllm/issues/8499
 class LMEvaluationHarnessEvaluator(Evaluator):
     """
@@ -136,6 +207,7 @@ class LMEvaluationHarnessEvaluator(Evaluator):
                         result_filepath = os.path.join(
                             self.RESULTS_PATH, f"{eval_task.name}_{eval_task.num_fewshot}shot"
                         )
+                        task_model_args = _normalize_model_args_for_task(pretrained_args_local, eval_task)
 
                         # Create the output directory
                         output_dir = os.path.dirname(result_filepath)
@@ -157,13 +229,14 @@ class LMEvaluationHarnessEvaluator(Evaluator):
                             model=lm_eval_model_local,
                             tasks=[eval_task.name],
                             num_fewshot=eval_task.num_fewshot,
-                            model_args=pretrained_args_local,
+                            model_args=task_model_args,
                             apply_chat_template=resolved_model.apply_chat_template,
                             batch_size="auto",
                             confirm_run_unsafe_code=True,
                             limit=max_eval_instances if max_eval_instances is not None else None,
                             evaluation_tracker=evaluation_tracker,
                             log_samples=True,
+                            metadata=eval_task.task_kwargs,
                         )
                         if results is not None:
                             samples = results.pop("samples")
@@ -175,7 +248,7 @@ class LMEvaluationHarnessEvaluator(Evaluator):
                                 wandb_logger.log_eval_samples(samples)
                                 wandb_logger.run.finish()
                             except Exception as e:
-                                print(f"Logging to Weights and Biases failed due to {e}")
+                                logger.warning("Logging to Weights and Biases failed due to %s", e)
 
                             for task_name in results["configs"].keys():
                                 evaluation_tracker.save_results_samples(task_name=task_name, samples=samples[task_name])

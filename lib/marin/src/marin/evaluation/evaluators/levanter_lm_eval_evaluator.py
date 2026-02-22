@@ -22,6 +22,63 @@ from marin.evaluation.evaluators.levanter_tpu_evaluator import LevanterTpuEvalua
 from fray.v1.cluster.ray.deps import build_runtime_env_for_packages
 
 logger = logging.getLogger(__name__)
+DEFAULT_LM_EVAL_MAX_LENGTH = 4096
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _max_task_seq_length(evals: list[EvalTaskConfig]) -> int | None:
+    max_length = None
+    for eval_task in evals:
+        task_kwargs = eval_task.task_kwargs or {}
+        task_seq_lengths = task_kwargs.get("max_seq_lengths")
+        if task_seq_lengths is None:
+            continue
+        if not isinstance(task_seq_lengths, list | tuple):
+            logger.warning(
+                "Ignoring non-list max_seq_lengths for task %s: %r",
+                eval_task.name,
+                task_seq_lengths,
+            )
+            continue
+        for seq_length in task_seq_lengths:
+            parsed = _coerce_positive_int(seq_length)
+            if parsed is None:
+                logger.warning(
+                    "Ignoring non-positive max_seq_lengths entry for task %s: %r",
+                    eval_task.name,
+                    seq_length,
+                )
+                continue
+            max_length = parsed if max_length is None else max(max_length, parsed)
+    return max_length
+
+
+def _resolve_lm_eval_max_length(engine_kwargs: dict | None, evals: list[EvalTaskConfig]) -> int:
+    engine_kwargs = engine_kwargs or {}
+    configured_max_length = _coerce_positive_int(engine_kwargs.get("max_length"))
+    if configured_max_length is None:
+        configured_max_length = _coerce_positive_int(engine_kwargs.get("max_model_len"))
+
+    task_max_length = _max_task_seq_length(evals)
+
+    if configured_max_length is None and task_max_length is None:
+        return DEFAULT_LM_EVAL_MAX_LENGTH
+    if configured_max_length is None:
+        return task_max_length
+    if task_max_length is None:
+        return configured_max_length
+    return max(configured_max_length, task_max_length)
 
 
 class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
@@ -67,22 +124,20 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             name = model.name + "_lmeval_" + "-".join([eval_task.name for eval_task in evals])
             logger.info(f"WandB Run Name: {name}")
             logger.info(f"Running eval harness on model: {model_name_or_path}")
-            print("after wandb log")
-            # NOTE(chris): Before, the batch size was 16, but this is too large for the 8B model.
-            # In the future, we should make this user-configurable.
             trainer_config = TrainerConfig(
                 tracker=WandbConfig(project="marin", tags=wandb_tags, name=name),
                 mp=jmp.get_policy("p=f32,c=bfloat16"),
                 per_device_eval_parallelism=1,
                 ray=RayConfig(auto_start_cluster=False),
             )
-            print("after trainer?")
 
             model_config = HFCheckpointConverter.from_hf(model_name_or_path).LevConfigClass()
 
             # convert to the config that Levanter's eval_harness expects
             tasks = convert_to_levanter_task_config(evals)
             logger.info(f"Tasks: {tasks}")
+            max_length = _resolve_lm_eval_max_length(model.engine_kwargs, evals)
+            logger.info("Resolved lm-eval max_length=%s", max_length)
 
             model_path = model_name_or_path
 
@@ -90,13 +145,12 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             logger.info(f"Model name: {model.name}")
             logger.info(f"model_name_or_path: {model_name_or_path}")
 
-            print("starting harness")
             eval_config = eval_harness.EvalHarnessMainConfig(
                 eval_harness=eval_harness.LmEvalHarnessConfig(
                     task_spec=tasks,
                     max_examples=max_eval_instances,
                     log_samples=False,
-                    max_length=4096,
+                    max_length=max_length,
                     apply_chat_template=model.apply_chat_template,
                     confirm_run_unsafe_code=True,
                     sample_logging=eval_harness.SampleLoggingConfig(max_samples_per_benchmark=20),
@@ -109,7 +163,6 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             )
 
             results = eval_harness.run_eval_harness_main(eval_config)
-            print("finished harness")
 
             try:
                 # add a results.json to output path
