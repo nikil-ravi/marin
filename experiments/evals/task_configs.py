@@ -536,6 +536,49 @@ MULTILINGUAL_LM_EVAL_LOGPROB_TASKS = (
 
 MULTILINGUAL_LM_EVAL_GENERATIVE_TASKS = MGSM_MULTILINGUAL_TASKS
 
+RULER_DEFAULT_MAX_SEQ_LENGTHS: tuple[int, ...] = (4096,)
+
+RULER_TASKS = (
+    EvalTaskConfig("niah_single_1", 0, task_alias="niah_single_1"),
+    EvalTaskConfig("niah_single_2", 0, task_alias="niah_single_2"),
+    EvalTaskConfig("niah_single_3", 0, task_alias="niah_single_3"),
+    EvalTaskConfig("niah_multikey_1", 0, task_alias="niah_multikey_1"),
+    EvalTaskConfig("niah_multikey_2", 0, task_alias="niah_multikey_2"),
+    EvalTaskConfig("niah_multikey_3", 0, task_alias="niah_multikey_3"),
+    EvalTaskConfig("niah_multiquery", 0, task_alias="niah_multiquery"),
+    EvalTaskConfig("niah_multivalue", 0, task_alias="niah_multivalue"),
+    EvalTaskConfig("ruler_vt", 0, task_alias="ruler_vt"),
+    EvalTaskConfig("ruler_cwe", 0, task_alias="ruler_cwe"),
+    EvalTaskConfig("ruler_fwe", 0, task_alias="ruler_fwe"),
+    EvalTaskConfig("ruler_qa_hotpot", 0, task_alias="ruler_qa_hotpot"),
+    EvalTaskConfig("ruler_qa_squad", 0, task_alias="ruler_qa_squad"),
+)
+
+
+def ruler_tasks_with_max_seq_lengths(max_seq_lengths: Sequence[int]) -> tuple[EvalTaskConfig, ...]:
+    """
+    Build RULER task configs with explicit max sequence lengths.
+    """
+    if not max_seq_lengths:
+        raise ValueError("max_seq_lengths must be non-empty")
+
+    normalized_lengths = tuple(int(length) for length in max_seq_lengths)
+    if any(length <= 0 for length in normalized_lengths):
+        raise ValueError(f"max_seq_lengths must be positive, got {normalized_lengths}")
+
+    return tuple(
+        EvalTaskConfig(
+            name=task.name,
+            num_fewshot=task.num_fewshot,
+            task_alias=task.task_alias,
+            task_kwargs={"max_seq_lengths": list(normalized_lengths)},
+        )
+        for task in RULER_TASKS
+    )
+
+
+RULER_TASKS_DEFAULT_LENGTH = ruler_tasks_with_max_seq_lengths(RULER_DEFAULT_MAX_SEQ_LENGTHS)
+
 
 def convert_to_levanter_task_config(tasks: Sequence[EvalTaskConfig]) -> list[TaskConfig]:
     """
@@ -546,6 +589,7 @@ def convert_to_levanter_task_config(tasks: Sequence[EvalTaskConfig]) -> list[Tas
             task=task.name,
             num_fewshot=task.num_fewshot,
             task_alias=task.task_alias,
+            metadata=task.task_kwargs,
         )
         for task in tasks
     ]
