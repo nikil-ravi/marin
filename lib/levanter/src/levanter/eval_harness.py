@@ -1085,18 +1085,28 @@ class LmEvalHarnessConfig:
         logger.info("Loading tasks...")
         import lm_eval.tasks as tasks
 
-        manager = tasks.TaskManager(metadata=task_manager_metadata)
+        default_manager = tasks.TaskManager(metadata=task_manager_metadata)
         # we need to do it this way b/c i can't figure out how to run e.g. hellaswag 0 shot and 10 shot in a single run
         this_tasks = {}
         for task in tqdm(self.to_task_spec()):
             try:
                 if isinstance(task, str):
-                    task_dict = _call_with_retry(lambda t=task: tasks.get_task_dict(t, manager))
+                    task_dict = _call_with_retry(lambda t=task: tasks.get_task_dict(t, default_manager))
                     this_tasks.update(task_dict)
                 else:
                     our_name = task.get("task_alias", task["task"]) if isinstance(task, dict) else task
                     assert isinstance(our_name, str)
                     our_name = our_name.replace(" ", "_")
+
+                    # Tasks like RULER pass config (e.g. max_seq_lengths) via metadata
+                    # that must be visible to the TaskManager when loading the task.
+                    task_metadata = task.get("metadata") if isinstance(task, dict) else None
+                    if task_metadata:
+                        merged = {**(task_manager_metadata or {}), **task_metadata}
+                        manager = tasks.TaskManager(metadata=merged)
+                    else:
+                        manager = default_manager
+
                     tasks_for_this_task_spec = self._get_task_and_rename(manager, our_name, task)
                     for k, v in tasks_for_this_task_spec.items():
                         if k in this_tasks:
@@ -1219,6 +1229,10 @@ class EvalHarnessMainConfig:
     """
     trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
     model: LmConfig = dataclasses.field(default_factory=Gpt2Config)
+    pretrained_model_name: str | None = None
+    """Original HF repo ID (e.g. 'meta-llama/Llama-3.1-8B-Instruct'). Used by tasks like
+    RULER that need a tokenizer name for synthetic data generation. When None, inferred
+    from the loaded tokenizer's init_kwargs."""
 
     @property
     def EvalBatch(self):
@@ -1239,6 +1253,7 @@ def run_lm_eval_harness(
     axis_resources,
     mp: jmp.Policy | None,
     profiler_config: ProfilerConfig | None = None,
+    pretrained_model_name: str | None = None,
 ) -> dict | None:
     """
     Run the LM Eval Harness on the given model and tasks.
@@ -1251,6 +1266,7 @@ def run_lm_eval_harness(
         axis_resources: Resource mapping for distributed computation
         mp: Mixed precision policy
         profiler_config: Optional ProfilerConfig for profiling during evaluation
+        pretrained_model_name: Original HF repo ID override for task metadata
 
     Returns:
         If running on process 0, returns the outputs of the LM Eval Harness with the following extra keys:
@@ -1258,7 +1274,7 @@ def run_lm_eval_harness(
         Otherwise, returns None.
     """
     # Build the tasks dictionary
-    task_manager_metadata = _task_manager_metadata_for_tokenizer(tokenizer)
+    task_manager_metadata = _task_manager_metadata_for_tokenizer(tokenizer, pretrained_model_name)
     tasks_to_run = config.to_task_dict(task_manager_metadata=task_manager_metadata)
 
     outputs = _actually_run_eval_harness(
@@ -1482,6 +1498,7 @@ def run_eval_harness_main(config: EvalHarnessMainConfig):
             axis_resources=compute_axis_mapping,
             mp=config.trainer.mp,
             profiler_config=profiler_config,
+            pretrained_model_name=config.pretrained_model_name,
         )
 
         logger.info("Finished running LM eval harness")
@@ -1596,10 +1613,32 @@ def lm_eval_harness(config: LmEvalHarnessConfig, tokenizer, EvalBatch, axis_reso
     return lm_eval_harness
 
 
-def _task_manager_metadata_for_tokenizer(tokenizer: HfTokenizer) -> dict[str, str]:
+def _task_manager_metadata_for_tokenizer(
+    tokenizer: HfTokenizer, pretrained_model_name: str | None = None
+) -> dict[str, str]:
+    if pretrained_model_name:
+        return {"pretrained": pretrained_model_name}
+
     tokenizer_name = getattr(tokenizer, "name_or_path", None) or getattr(tokenizer, "model_name", None)
     if tokenizer_name is None:
         return {}
+
+    # Cloud/file paths aren't valid HF repo IDs. Recover the original from the
+    # tokenizer's init_kwargs (HF preserves _name_or_path from tokenizer_config.json).
+    if tokenizer_name.startswith(("gs://", "s3://", "/", ".")):
+        init_kwargs = getattr(tokenizer, "init_kwargs", {})
+        original = init_kwargs.get("_name_or_path") or init_kwargs.get("name_or_path")
+        if original and not original.startswith(("gs://", "s3://", "/", ".")):
+            tokenizer_name = original
+        else:
+            logger.warning(
+                "Tokenizer name_or_path %r looks like a file path; could not recover "
+                "the original HF model name. Tasks that need a pretrained tokenizer "
+                "(e.g. RULER) may fail.",
+                tokenizer_name,
+            )
+            return {}
+
     return {"pretrained": tokenizer_name}
 
 

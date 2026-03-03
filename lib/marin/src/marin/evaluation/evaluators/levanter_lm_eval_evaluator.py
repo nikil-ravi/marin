@@ -89,6 +89,10 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             logger.info(f"Model name: {model.name}")
             logger.info(f"model_name_or_path: {model_name_or_path}")
 
+            pretrained_model_name = _read_hf_model_name(model_path)
+            if pretrained_model_name:
+                logger.info(f"Resolved HF model name for task metadata: {pretrained_model_name}")
+
             eval_config = eval_harness.EvalHarnessMainConfig(
                 eval_harness=eval_harness.LmEvalHarnessConfig(
                     task_spec=tasks,
@@ -99,11 +103,12 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
                     confirm_run_unsafe_code=True,
                     sample_logging=eval_harness.SampleLoggingConfig(max_samples_per_benchmark=20),
                 ),
-                tokenizer=model_path,  # levanter picks up the tokenizer from the model path
+                tokenizer=model_path,
                 checkpoint_path=model_path,
                 checkpoint_is_hf=True,
                 trainer=trainer_config,
                 model=model_config,
+                pretrained_model_name=pretrained_model_name,
             )
 
             results = eval_harness.run_eval_harness_main(eval_config)
@@ -132,6 +137,20 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
         finally:
             # Clean up resources
             self.cleanup(model)
+
+
+def _read_hf_model_name(model_path: str) -> str | None:
+    """Read the original HF repo ID from config.json at the model path."""
+    config_path = os.path.join(model_path, "config.json")
+    try:
+        with fsspec.open(config_path, "r") as f:
+            hf_config = json.load(f)
+        name = hf_config.get("_name_or_path")
+        if name and not name.startswith(("gs://", "s3://", "/", ".")):
+            return name
+    except Exception:
+        logger.debug("Could not read HF model name from %s", config_path, exc_info=True)
+    return None
 
 
 def _json_default(value):
