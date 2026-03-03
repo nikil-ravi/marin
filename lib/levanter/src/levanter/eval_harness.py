@@ -1094,7 +1094,22 @@ class LmEvalHarnessConfig:
                     task_dict = _call_with_retry(lambda t=task: tasks.get_task_dict(t, default_manager))
                     this_tasks.update(task_dict)
                 else:
-                    our_name = task.get("task_alias", task["task"]) if isinstance(task, dict) else task
+                    if isinstance(task, dict) and not task.get("task"):
+                        task_alias = task.get("task_alias")
+                        if isinstance(task_alias, str) and task_alias:
+                            logger.warning(
+                                "Task spec is missing `task`; falling back to task_alias=%s. "
+                                "This usually indicates upstream serialization dropped the task name.",
+                                task_alias,
+                            )
+                            task = {**task, "task": task_alias}
+                        else:
+                            raise ValueError(f"Task spec is missing required `task`: {task}")
+
+                    if isinstance(task, dict):
+                        our_name = task.get("task_alias") or task["task"]
+                    else:
+                        our_name = task
                     assert isinstance(our_name, str)
                     our_name = our_name.replace(" ", "_")
 
@@ -1129,7 +1144,14 @@ class LmEvalHarnessConfig:
         """
         import lm_eval.tasks as tasks
 
-        task_name = task if isinstance(task, str) else task["task"]
+        if isinstance(task, str):
+            task_name = task
+        else:
+            task_name = task.get("task") or task.get("task_alias")
+            if not isinstance(task_name, str) or not task_name:
+                raise ValueError(f"Task spec is missing required task name: {task}")
+            if "task" not in task:
+                task = {**task, "task": task_name}
 
         task_dict = _call_with_retry(lambda: tasks.get_task_dict([task], manager))
         assert len(task_dict) == 1, f"Expected 1 task, got {len(task_dict)}"
