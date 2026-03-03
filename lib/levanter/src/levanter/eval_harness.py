@@ -1153,7 +1153,11 @@ class LmEvalHarnessConfig:
             if "task" not in task:
                 task = {**task, "task": task_name}
 
-        task_dict = _call_with_retry(lambda: tasks.get_task_dict([task], manager))
+        def _load_task_dict():
+            task_spec = task if isinstance(task, str) else dict(task)
+            return tasks.get_task_dict([task_spec], manager)
+
+        task_dict = _call_with_retry(_load_task_dict)
         assert len(task_dict) == 1, f"Expected 1 task, got {len(task_dict)}"
         try:
             this_task = self._rename_tasks_for_eval_harness(task_dict, task_name, our_name)
