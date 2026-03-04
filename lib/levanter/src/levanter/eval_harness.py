@@ -1643,7 +1643,7 @@ def _task_manager_metadata_for_tokenizer(
     tokenizer: HfTokenizer, pretrained_model_name: str | None = None
 ) -> dict[str, str]:
     if pretrained_model_name:
-        return {"pretrained": pretrained_model_name}
+        return {"pretrained": pretrained_model_name, "tokenizer": pretrained_model_name}
 
     tokenizer_name = getattr(tokenizer, "name_or_path", None) or getattr(tokenizer, "model_name", None)
     if tokenizer_name is None:
@@ -1665,7 +1665,7 @@ def _task_manager_metadata_for_tokenizer(
             )
             return {}
 
-    return {"pretrained": tokenizer_name}
+    return {"pretrained": tokenizer_name, "tokenizer": tokenizer_name}
 
 
 # lifted from lm-eval simple_evaluate

@@ -89,7 +89,7 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             logger.info(f"Model name: {model.name}")
             logger.info(f"model_name_or_path: {model_name_or_path}")
 
-            pretrained_model_name = _read_hf_model_name(model_path)
+            pretrained_model_name = _resolve_hf_model_name(model_path=model_path, model_name=model.name)
             if pretrained_model_name:
                 logger.info(f"Resolved HF model name for task metadata: {pretrained_model_name}")
 
@@ -134,12 +134,16 @@ class LevanterLmEvalEvaluator(LevanterTpuEvaluator):
             logger.error(f"Error running eval harness: {e}")
             raise e
 
-        finally:
-            # Clean up resources
-            self.cleanup(model)
+
+def _resolve_hf_model_name(model_path: str, model_name: str) -> str | None:
+    model_name_from_config = _read_hf_model_name_from_config(model_path)
+    if model_name_from_config is not None:
+        return model_name_from_config
+
+    return _infer_hf_model_name_from_identifier(model_name) or _infer_hf_model_name_from_identifier(model_path)
 
 
-def _read_hf_model_name(model_path: str) -> str | None:
+def _read_hf_model_name_from_config(model_path: str) -> str | None:
     """Read the original HF repo ID from config.json at the model path."""
     config_path = os.path.join(model_path, "config.json")
     try:
@@ -151,6 +155,26 @@ def _read_hf_model_name(model_path: str) -> str | None:
     except Exception:
         logger.debug("Could not read HF model name from %s", config_path, exc_info=True)
     return None
+
+
+def _infer_hf_model_name_from_identifier(identifier: str) -> str | None:
+    component = identifier.rstrip("/").split("/")[-1]
+    if "/" in identifier and not identifier.startswith(("gs://", "s3://", "/", ".")):
+        return identifier
+
+    pieces = component.split("--")
+    if len(pieces) < 3:
+        return None
+
+    maybe_revision = pieces[-1]
+    if len(maybe_revision) < 6 or any(c not in "0123456789abcdef" for c in maybe_revision.lower()):
+        return None
+
+    org = pieces[0]
+    repo = "--".join(pieces[1:-1])
+    if not org or not repo:
+        return None
+    return f"{org}/{repo}"
 
 
 def _json_default(value):
